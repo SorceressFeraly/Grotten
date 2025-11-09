@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Browser Dungeon Crawler (Tile Grid)</title>
+  <style>
+    :root {
+      --tile-size: 149px;
+      --grid-size: 21; /* must be odd to have a true center */
+      --gap: 2px;
+    }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: #0f0f13;
+      color: #e8e8ef;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
+    }
+
+    .app {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      height: 100%;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      background: #17171d;
+      border-bottom: 1px solid #23232b;
+      position: sticky;
+      top: 0;
+      z-index: 5;
+    }
+
+    .pill {
+      padding: 6px 10px;
+      background: #23232b;
+      border-radius: 999px;
+      font-size: 12px;
+      line-height: 1;
+      color: #cfd1dd;
+      border: 1px solid #2b2b36;
+      white-space: nowrap;
+    }
+
+    .content {
+      display: grid;
+      grid-template-columns: 1fr;
+      overflow: hidden;
+    }
+
+    .board-wrap {
+      overflow: auto;
+      padding: 12px;
+    }
+
+    .board {
+      display: grid;
+      grid-template-columns: repeat(var(--grid-size), var(--tile-size));
+      grid-template-rows: repeat(var(--grid-size), var(--tile-size));
+      gap: var(--gap);
+      width: calc(var(--grid-size) * (var(--tile-size) + var(--gap)));
+      user-select: none;
+      margin: 0 auto;
+    }
+
+    .cell {
+      width: var(--tile-size);
+      height: var(--tile-size);
+      background: #111116;
+      border: 1px dashed #2a2a35;
+      display: grid;
+      place-items: center;
+      position: relative;
+      transition: box-shadow 0.15s ease, border-color 0.15s ease, transform 0.05s ease;
+    }
+
+    .cell:hover { border-color: #3a3a49; }
+
+    .cell img.tile {
+      width: var(--tile-size);
+      height: var(--tile-size);
+      image-rendering: auto;
+      image-rendering: crisp-edges;
+      image-rendering: pixelated; /* in case the art is pixel-y */
+      transform-origin: center center;
+      display: block;
+      pointer-events: none; /* clicks go to the cell */
+    }
+
+    .cell[data-type="entrance"],
+    .cell[data-type="door"],
+    .cell[data-type="room"],
+    .cell[data-type="corridor"] {
+      border-style: solid;
+      border-color: #3b3b47;
+      background: #121218;
+    }
+
+    .cell.selected {
+      outline: 3px solid #6ea9ff;
+      box-shadow: 0 0 0 3px #0f0f13, 0 0 0 6px rgba(110,169,255,0.35);
+      z-index: 2;
+    }
+
+    /* Modal for rotation prompt */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.65);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+    }
+    .modal-backdrop.show { display: flex; }
+
+    .modal {
+      background: #17171d;
+      border: 1px solid #2c2c36;
+      border-radius: 14px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+      padding: 16px;
+      width: min(520px, calc(100% - 32px));
+    }
+
+    .modal h2 {
+      margin: 0 0 10px 0;
+      font-size: 18px;
+    }
+
+    .modal .actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+
+    button {
+      background: #262631;
+      color: #e8e8ef;
+      border: 1px solid #343444;
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button:hover { background: #2b2b38; }
+    button:active { transform: translateY(1px); }
+
+    .kbd {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 12px;
+      padding: 2px 6px;
+      border: 1px solid #3a3a49;
+      border-bottom-width: 3px;
+      background: #1e1e27;
+      border-radius: 6px;
+      margin: 0 2px;
+      display: inline-block;
+    }
+
+    .legend {
+      opacity: 0.85;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="topbar">
+      <div class="pill">Click empty space → places a random <strong>Door</strong></div>
+      <div class="pill">Click a Door → becomes random <strong>Corridor/Room</strong> and prompts rotation</div>
+      <div class="pill legend">Rotate with <span class="kbd">A</span>/<span class="kbd">D</span> or 
+        <span class="kbd">◀</span>/<span class="kbd">▶</span>; Confirm with <span class="kbd">Enter</span></div>
+    </div>
+
+    <div class="content">
+      <div class="board-wrap">
+        <div id="board" class="board" aria-label="Dungeon grid" role="grid"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Rotation Modal -->
+  <div id="rotateBackdrop" class="modal-backdrop" aria-modal="true" role="dialog" aria-labelledby="rotateTitle">
+    <div class="modal">
+      <h2 id="rotateTitle">Rotate the tile, then confirm</h2>
+      <div class="actions">
+        <button id="btnLeft" title="Rotate 90° counter-clockwise"><span aria-hidden>⟲</span> Rotate Left</button>
+        <button id="btnRight" title="Rotate 90° clockwise"><span aria-hidden>⟳</span> Rotate Right</button>
+        <button id="btnConfirm" style="margin-left:auto"><strong>Confirm</strong> ✓</button>
+      </div>
+      <p class="legend" style="margin-top:10px">Shortcuts: <span class="kbd">A</span>/<span class="kbd">◀</span> left, 
+        <span class="kbd">D</span>/<span class="kbd">▶</span> right, <span class="kbd">Enter</span> confirm.</p>
+    </div>
+  </div>
+
+  <script>
+    // ===== Configuration =====
+    const TILE_SIZE = 149; // px
+    const GRID_SIZE = 21;  // must be odd to have a center cell
+
+    const ENTRANCE_TILE = 'Tile_Entrance.png';
+    const DOOR_TILES = ['Tile_Door_Locked.png', 'Tile_Door_Unlocked.png'];
+    const CORRIDOR_TILES = ['Tile_Corridor.png', 'Tile_Corner.png', 'Tile_TCrossing.png', 'Tile_Crossing.png'];
+    const ROOM_TILES = ['Tile_CornerRoom.png', 'Tile_Room.png', 'Tile_RoomCrossing.png', 'Tile_TRoom.png'];
+
+    // ===== State =====
+    let isRotating = false;
+    let selectedCell = null; // DOM element of the cell being rotated
+
+    // ===== Utils =====
+    const randOf = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+    function makeImg(src, rotation = 0) {
+      const img = document.createElement('img');
+      img.className = 'tile';
+      img.alt = src;
+      img.src = src; // images are expected to sit next to this HTML file
+      img.width = TILE_SIZE; img.height = TILE_SIZE;
+      img.draggable = false;
+      img.style.transform = `rotate(${rotation}deg)`;
+      img.addEventListener('dragstart', (e) => e.preventDefault());
+      return img;
+    }
+
+    function setRotation(cell, rotation) {
+      cell.dataset.rotation = String(((rotation % 360) + 360) % 360);
+      const img = cell.querySelector('img.tile');
+      if (img) img.style.transform = `rotate(${cell.dataset.rotation}deg)`;
+    }
+
+    function setTypeWithImage(cell, type, src) {
+      cell.dataset.type = type;
+      if (cell.firstChild) cell.firstChild.remove();
+      const img = makeImg(src, Number(cell.dataset.rotation || 0));
+      cell.appendChild(img);
+    }
+
+    function startRotation(cell) {
+      isRotating = true;
+      selectedCell = cell;
+      cell.classList.add('selected');
+      document.getElementById('rotateBackdrop').classList.add('show');
+    }
+
+    function finishRotation() {
+      if (!selectedCell) return;
+      selectedCell.classList.remove('selected');
+      selectedCell = null;
+      isRotating = false;
+      document.getElementById('rotateBackdrop').classList.remove('show');
+    }
+
+    // ===== Build Grid =====
+    const board = document.getElementById('board');
+    board.style.setProperty('--grid-size', GRID_SIZE);
+    board.style.setProperty('--tile-size', TILE_SIZE + 'px');
+
+    for (let y = 0; y < GRID_SIZE; y++) {
+      for (let x = 0; x < GRID_SIZE; x++) {
+        const cell = document.createElement('div');
+        cell.className = 'cell';
+        cell.setAttribute('role', 'gridcell');
+        cell.dataset.x = x;
+        cell.dataset.y = y;
+        cell.dataset.type = 'empty';
+        cell.dataset.rotation = '0';
+        board.appendChild(cell);
+      }
+    }
+
+    // Place entrance at center
+    const cx = Math.floor(GRID_SIZE / 2);
+    const cy = Math.floor(GRID_SIZE / 2);
+    const centerIndex = cy * GRID_SIZE + cx;
+    const centerCell = board.children[centerIndex];
+    centerCell.dataset.type = 'entrance';
+    centerCell.appendChild(makeImg(ENTRANCE_TILE, 0));
+
+    // ===== Interactions =====
+    board.addEventListener('click', (e) => {
+      const cell = e.target.closest('.cell');
+      if (!cell || isRotating) return; // ignore clicks during rotation prompt
+
+      const type = cell.dataset.type;
+      if (type === 'empty') {
+        // Place random door
+        setRotation(cell, 0);
+        setTypeWithImage(cell, 'door', randOf(DOOR_TILES));
+      } else if (type === 'door') {
+        // Replace with Corridor or Room, then prompt rotation
+        const chooseRoom = Math.random() < 0.5;
+        const tileSrc = chooseRoom ? randOf(ROOM_TILES) : randOf(CORRIDOR_TILES);
+        const newType = chooseRoom ? 'room' : 'corridor';
+        setRotation(cell, 0); // reset rotation when becoming a new tile
+        setTypeWithImage(cell, newType, tileSrc);
+        startRotation(cell);
+      } else {
+        // Non-interactive tiles (entrance, corridor, room) ignore clicks
+        return;
+      }
+    });
+
+    // Modal buttons
+    document.getElementById('btnLeft').addEventListener('click', () => {
+      if (!isRotating || !selectedCell) return;
+      const r = Number(selectedCell.dataset.rotation || 0);
+      setRotation(selectedCell, r - 90);
+    });
+
+    document.getElementById('btnRight').addEventListener('click', () => {
+      if (!isRotating || !selectedCell) return;
+      const r = Number(selectedCell.dataset.rotation || 0);
+      setRotation(selectedCell, r + 90);
+    });
+
+    document.getElementById('btnConfirm').addEventListener('click', () => {
+      if (!isRotating) return;
+      finishRotation();
+    });
+
+    // Keyboard shortcuts during rotation
+    window.addEventListener('keydown', (e) => {
+      if (!isRotating || !selectedCell) return;
+      if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        const r = Number(selectedCell.dataset.rotation || 0);
+        setRotation(selectedCell, r - 90);
+      } else if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'd') {
+        e.preventDefault();
+        const r = Number(selectedCell.dataset.rotation || 0);
+        setRotation(selectedCell, r + 90);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        finishRotation();
+      }
+    });
+
+    // Prevent wheel from rotating images inadvertently while over modal
+    document.getElementById('rotateBackdrop').addEventListener('wheel', (e) => {
+      if (isRotating) e.preventDefault();
+    }, { passive: false });
+  </script>
+</body>
+</html>
